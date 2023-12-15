@@ -1,0 +1,16 @@
+{
+  "name": "outfit-copy",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js --port 9092"
+  },
+  "keywords": [],
+  "author": "altxnor",
+  "license": "ISC",
+  "dependencies": {
+    "gnode-api": "^0.2.15"
+  }
+}
