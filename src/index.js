@@ -10,7 +10,7 @@ import {
 const extensionInfo = {
   name: "Outfit Copy",
   description: "Copy everyone's outfit",
-  version: "1.0",
+  version: "0.1.1",
   author: "altxnor",
 };
 
@@ -19,18 +19,22 @@ ext.run();
 
 ext.on("click", () => {
   extState = !extState;
+  const state = extState ? "on" : "off";
+  sendFeedbackMessage(`Extension is now ${state}`);
 });
 
 ext.interceptByNameOrHash(HDirection.TOSERVER, "Chat", onUserMessage);
 ext.interceptByNameOrHash(HDirection.TOCLIENT, "Users", onUsers);
 ext.interceptByNameOrHash(HDirection.TOCLIENT, "UserChange", onUserChange);
-ext.interceptByNameOrHash(HDirection.TOCLIENT, "UserRemove", onUserRemove);
+// ext.interceptByNameOrHash(HDirection.TOCLIENT, "UserRemove", onUserRemove);
 ext.interceptByNameOrHash(HDirection.TOSERVER, "Quit", clearUsersArray);
 ext.interceptByNameOrHash(HDirection.TOCLIENT, "RoomReady", clearUsersArray);
 
 let extState = true;
 let usersEntities = [];
 let shouldStopCycling = true;
+const MAX_USERS = 400;
+let myIdx = -1;
 
 const outfitCombinePatterns = [
   // keep hair, legs and head
@@ -47,11 +51,14 @@ const outfitCombinePatterns = [
 ];
 
 function clearUsersArray() {
-  usersEntities = [];
+  myIdx = -1;
+  // usersEntities = [];
 }
 
 function getUserEntityByName(name) {
-  return usersEntities.find((user) => user.name === name);
+  return usersEntities.find(
+    (user) => user.name.toLowerCase() === name.toLowerCase()
+  );
 }
 
 function getUserEntityByIndex(index) {
@@ -60,20 +67,22 @@ function getUserEntityByIndex(index) {
 
 function onUsers(hMessage) {
   const users = HEntity.parse(hMessage.getPacket());
+  if (myIdx === -1) myIdx = users[0]?.index || -1;
 
   if (!extState) return;
-  users.forEach((userEntity) => {
-    if (usersEntities.find((v) => v.id === userEntity.id) == null) {
-      if (userEntity.entityType === HEntityType.HABBO)
-        usersEntities.push({
-          id: userEntity.id,
-          name: userEntity.name,
-          index: userEntity.index,
-          gender: userEntity.gender,
-          figureData: userEntity.figureId,
-        });
-    }
-  });
+  for (const userEntity of users) {
+    if (usersEntities.find((v) => v.id === userEntity.id) != null) continue;
+    if (userEntity.entityType !== HEntityType.HABBO) continue;
+
+    if (usersEntities.length >= MAX_USERS) usersEntities.shift();
+    usersEntities.push({
+      id: userEntity.id,
+      name: userEntity.name,
+      index: userEntity.index,
+      gender: userEntity.gender,
+      figureData: userEntity.figureId,
+    });
+  }
 }
 
 function onUserChange(hMessage) {
@@ -93,9 +102,7 @@ function onUserChange(hMessage) {
 
 function onUserRemove(hMessage) {
   const userIndex = parseInt(hMessage.getPacket().readString());
-
   if (!extState) return;
-
   const userArrIndex = usersEntities.findIndex((u) => u.index === userIndex);
   if (userArrIndex < 0) return;
   usersEntities.splice(userArrIndex, 1);
@@ -114,9 +121,10 @@ function onUserMessage(hMessage) {
       hMessage.blocked = true;
       const userName = message.replace(":copy", "").trim();
       const userEntity = getUserEntityByName(userName);
-      console.log(userName)
       if (!userEntity) {
-        sendFeedbackMessage(`${userName} not found.`, false);
+        if (usersEntities.length === 0)
+          sendFeedbackMessage(`Please, reenter the room`);
+        else sendFeedbackMessage(`${userName} not found.`, false);
         return;
       }
       updateFigureData(userEntity);
@@ -126,6 +134,10 @@ function onUserMessage(hMessage) {
       hMessage.blocked = true;
       const params = message.replace(":outfitcombine", "").trim().split(" ");
       if (params.length < 2) return;
+      if (usersEntities.length === 0) {
+        sendFeedbackMessage(`Please, reenter the room`);
+        return;
+      }
 
       let outfitCombineType = params.pop();
       if (isNaN(outfitCombineType)) {
@@ -147,6 +159,10 @@ function onUserMessage(hMessage) {
       break;
     case ":outfitcycle":
       hMessage.blocked = true;
+      if (usersEntities.length === 0) {
+        sendFeedbackMessage(`Please, reenter the room`);
+        return;
+      }
       if (usersEntities.length < 2) return;
       shouldStopCycling = false;
       cycleOutfit(1, 5000);
@@ -161,8 +177,7 @@ function onUserMessage(hMessage) {
 }
 
 function combineOutfit(users, type = 1) {
-  type = type - 1;
-  let index = type * 2;
+  let index = (type - 1) * 2;
   const pattern1 = outfitCombinePatterns[index];
   const pattern2 = outfitCombinePatterns[index + 1];
 
@@ -187,9 +202,8 @@ function cycleOutfit(i, delay) {
 
 function sendFeedbackMessage(message, shout = true) {
   const type = shout ? "Shout" : "Chat";
-  const ownIdx = usersEntities[0].index || -1;
   const msgPacket = new HPacket(type, HDirection.TOCLIENT)
-    .appendInt(ownIdx)
+    .appendInt(myIdx)
     .appendString(message)
     .appendInt(1)
     .appendInt(33)
