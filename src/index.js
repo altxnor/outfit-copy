@@ -27,14 +27,15 @@ ext.interceptByNameOrHash(HDirection.TOSERVER, "Chat", onUserMessage);
 ext.interceptByNameOrHash(HDirection.TOCLIENT, "Users", onUsers);
 ext.interceptByNameOrHash(HDirection.TOCLIENT, "UserChange", onUserChange);
 // ext.interceptByNameOrHash(HDirection.TOCLIENT, "UserRemove", onUserRemove);
-ext.interceptByNameOrHash(HDirection.TOSERVER, "Quit", clearUsersArray);
-ext.interceptByNameOrHash(HDirection.TOCLIENT, "RoomReady", clearUsersArray);
+ext.interceptByNameOrHash(HDirection.TOSERVER, "Quit", resetData);
+ext.interceptByNameOrHash(HDirection.TOCLIENT, "RoomReady", resetData);
 
 let extState = true;
-let usersEntities = [];
+let myIdx = -1;
+let usersEntitiesRoom = [];
 let shouldStopCycling = true;
 const MAX_USERS = 400;
-let myIdx = -1;
+const usersEntities = [];
 
 const outfitCombinePatterns = [
   // keep hair, legs and head
@@ -50,19 +51,60 @@ const outfitCombinePatterns = [
   /\b(?:hr|hd|he|ha|ea|fa)[^.\s]*\.?\b/g,
 ];
 
-function clearUsersArray() {
+function resetData() {
+  usersEntitiesRoom.forEach((user) => {
+    const existingUserId = usersEntities.findIndex((u) => u.id === user.id);
+    if (existingUserId >= 0) {
+      usersEntities[existingUserId] = user;
+    } else {
+      if (usersEntities.length >= MAX_USERS) usersEntities.shift();
+      usersEntities.push(user);
+    }
+  });
   myIdx = -1;
-  // usersEntities = [];
+  usersEntitiesRoom = [];
+  shouldStopCycling = true;
 }
 
-function getUserEntityByName(name) {
-  return usersEntities.find(
-    (user) => user.name.toLowerCase() === name.toLowerCase()
-  );
+function getEntityByName(arr, name) {
+  return arr.find((user) => user.name.toLowerCase() === name.toLowerCase());
 }
 
-function getUserEntityByIndex(index) {
-  return usersEntities.find((user) => user.index === index);
+function getEntityByIndex(arr, index) {
+  return arr.find((user) => user.index === index);
+}
+
+function hasNoUsers() {
+  if (usersEntitiesRoom.length === 0) {
+    sendFeedbackMessage(`No users found or you need to reenter the room`);
+    return true;
+  }
+  return false;
+}
+
+function onUserMessage(hMessage) {
+  const message = hMessage.getPacket().readString();
+  if (!extState) return;
+
+  const messageCommand = message.split(" ")[0];
+  const args = message.replace(messageCommand, "").trim();
+
+  switch (messageCommand) {
+    case ":copy":
+      handleCopyCommand(hMessage, args);
+      break;
+    case ":ofc":
+    case ":outfitcombine":
+      handleOutfitCombineCommand(hMessage, args);
+      break;
+    case ":outfitcycle":
+      handleOutfitCycleCommand(hMessage);
+      break;
+    case ":outfitstop":
+      hMessage.blocked = true;
+      shouldStopCycling = true;
+      break;
+  }
 }
 
 function onUsers(hMessage) {
@@ -71,17 +113,22 @@ function onUsers(hMessage) {
 
   if (!extState) return;
   for (const userEntity of users) {
-    if (usersEntities.find((v) => v.id === userEntity.id) != null) continue;
     if (userEntity.entityType !== HEntityType.HABBO) continue;
 
-    if (usersEntities.length >= MAX_USERS) usersEntities.shift();
-    usersEntities.push({
+    const user = {
       id: userEntity.id,
       name: userEntity.name,
       index: userEntity.index,
       gender: userEntity.gender,
       figureData: userEntity.figureId,
-    });
+    };
+
+    let userIndex = usersEntitiesRoom.findIndex((u) => u.id === user.id);
+    if (userIndex >= 0) {
+      usersEntitiesRoom[userIndex] = user;
+    } else {
+      usersEntitiesRoom.push(user);
+    }
   }
 }
 
@@ -92,88 +139,68 @@ function onUserChange(hMessage) {
   const userIndex = parseInt(userChange[0]);
   const userFigureData = userChange[1].toString();
   const userGender = userChange[2].toString();
+  const userEntityRoom = getEntityByIndex(usersEntitiesRoom, userIndex);
+  if (!userEntityRoom) return;
 
-  let userEntity = getUserEntityByIndex(userIndex);
-  if (!userEntity) return;
-
-  userEntity.figureData = userFigureData;
-  userEntity.gender = userGender === "m" ? HGender.Male : HGender.Female;
+  userEntityRoom.figureData = userFigureData;
+  userEntityRoom.gender = userGender === "m" ? HGender.Male : HGender.Female;
 }
 
 function onUserRemove(hMessage) {
   const userIndex = parseInt(hMessage.getPacket().readString());
   if (!extState) return;
-  const userArrIndex = usersEntities.findIndex((u) => u.index === userIndex);
+  const userArrIndex = usersEntitiesRoom.findIndex(
+    (u) => u.index === userIndex
+  );
   if (userArrIndex < 0) return;
-  usersEntities.splice(userArrIndex, 1);
+  usersEntitiesRoom.splice(userArrIndex, 1);
 }
 
-function onUserMessage(hMessage) {
-  const message = hMessage.getPacket().readString();
-  if (!extState) return;
+function handleCopyCommand(hMessage, args) {
+  hMessage.blocked = true;
+  if (hasNoUsers()) return;
 
-  const messageCommand = message.split(" ")[0];
+  const userName = args;
 
-  if (!messageCommand.startsWith(":")) return;
+  let userEntity =
+    getEntityByName(usersEntitiesRoom, userName) ||
+    getEntityByName(usersEntities, userName);
 
-  switch (messageCommand) {
-    case ":copy":
-      hMessage.blocked = true;
-      const userName = message.replace(":copy", "").trim();
-      const userEntity = getUserEntityByName(userName);
-      if (!userEntity) {
-        if (usersEntities.length === 0)
-          sendFeedbackMessage(`Please, reenter the room`);
-        else sendFeedbackMessage(`${userName} not found.`, false);
-        return;
-      }
-      updateFigureData(userEntity);
-
-      break;
-    case ":outfitcombine":
-      hMessage.blocked = true;
-      const params = message.replace(":outfitcombine", "").trim().split(" ");
-      if (params.length < 2) return;
-      if (usersEntities.length === 0) {
-        sendFeedbackMessage(`Please, reenter the room`);
-        return;
-      }
-
-      let outfitCombineType = params.pop();
-      if (isNaN(outfitCombineType)) {
-        params.push(outfitCombineType);
-        outfitCombineType = 3;
-      }
-
-      const users = [];
-      params
-        .map((name) => getUserEntityByName(name))
-        .forEach((u) => {
-          if (u != null) users.push(u);
-        });
-
-      if (users.length >= 2) {
-        combineOutfit(users, outfitCombineType);
-      }
-
-      break;
-    case ":outfitcycle":
-      hMessage.blocked = true;
-      if (usersEntities.length === 0) {
-        sendFeedbackMessage(`Please, reenter the room`);
-        return;
-      }
-      if (usersEntities.length < 2) return;
-      shouldStopCycling = false;
-      cycleOutfit(1, 5000);
-
-      break;
-    case ":outfitstop":
-      hMessage.blocked = true;
-      shouldStopCycling = true;
-
-      break;
+  if (!userEntity) {
+    sendFeedbackMessage(`${userName} not found.`);
+    return;
   }
+
+  updateFigureData(userEntity);
+}
+
+function handleOutfitCombineCommand(hMessage, args) {
+  hMessage.blocked = true;
+  const params = args.split(" ");
+  if (params.length < 2 || hasNoUsers()) return;
+
+  const outfitCombineType = isNaN(params[params.length - 1])
+    ? 3
+    : parseInt(params.pop());
+
+  const users = params
+    .map(
+      (name) =>
+        getEntityByName(usersEntitiesRoom, name) ||
+        getEntityByName(usersEntities, name)
+    )
+    .filter((u) => u != null);
+
+  if (users.length >= 2) {
+    combineOutfit(users, outfitCombineType);
+  }
+}
+
+function handleOutfitCycleCommand(hMessage) {
+  hMessage.blocked = true;
+  if (hasNoUsers() || usersEntitiesRoom.length < 2) return;
+  shouldStopCycling = false;
+  cycleOutfit(1, 5000);
 }
 
 function combineOutfit(users, type = 1) {
@@ -193,9 +220,9 @@ function combineOutfit(users, type = 1) {
 }
 
 function cycleOutfit(i, delay) {
-  if (i >= usersEntities.length || shouldStopCycling) return;
+  if (i >= usersEntitiesRoom.length || shouldStopCycling) return;
 
-  updateFigureData(usersEntities[i]);
+  updateFigureData(usersEntitiesRoom[i]);
 
   setTimeout(() => cycleOutfit(i + 1, delay), delay);
 }
